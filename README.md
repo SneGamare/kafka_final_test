@@ -1,138 +1,214 @@
-# Kafka Avro Demo Application
+# Kafka Message Processing Application
 
-This is a Spring Boot application that demonstrates Kafka integration with Avro serialization. The application provides REST endpoints to send and receive messages using Kafka with Avro serialization.
+This is a Spring Boot application that demonstrates reactive Kafka message processing with H2 database integration. The application provides REST APIs to send messages to Kafka topics and processes them using a reactive consumer.
+
+## Table of Contents
+- [Features](#features)
+- [Prerequisites](#prerequisites)
+- [Setup Instructions](#setup-instructions)
+- [API Documentation](#api-documentation)
+- [Code Structure](#code-structure)
+- [Database Schema](#database-schema)
+- [Configuration](#configuration)
+
+## Features
+- Reactive Kafka message processing
+- REST API endpoints for message operations
+- H2 in-memory database integration
+- Message persistence and retrieval
+- Error handling and retry mechanisms
 
 ## Prerequisites
-
 - Java 17 or higher
-- Maven 3.6 or higher
-- Docker and Docker Compose (for running Kafka)
-- Git (optional, for cloning the repository)
+- Maven
+- Kafka server running locally
+- H2 database (included as dependency)
 
 ## Setup Instructions
 
-1. **Clone the repository** (if you haven't already):
-   ```bash
-   git clone <repository-url>
-   cd kafka-avro-demo
-   ```
+1. Clone the repository:
+```bash
+git clone <repository-url>
+cd <project-directory>
+```
 
-2. **Start Kafka using Docker Compose**:
-   ```bash
-   docker-compose up -d
-   ```
-   This will start:
-   - Zookeeper (port 2181)
-   - Kafka broker (port 9092)
-   - Schema Registry (port 8081)
+2. Start Kafka server:
+```bash
+# Start Zookeeper
+bin/zookeeper-server-start.sh config/zookeeper.properties
 
-3. **Build the application**:
-   ```bash
-   mvn clean install
-   ```
+# Start Kafka server
+bin/kafka-server-start.sh config/server.properties
+```
 
-## Running the Application
+3. Build the application:
+```bash
+mvn clean install
+```
 
-1. **Start the Spring Boot application**:
-   ```bash
-   java -jar target/kafka-avro-demo-1.0-SNAPSHOT.jar
-   ```
-   The application will start on port 8080.
+4. Run the application:
+```bash
+mvn spring-boot:run
+```
 
-2. **Verify the application is running**:
-   ```bash
-   curl http://localhost:8080/api/kafka/health
-   ```
-   Expected response: `Kafka service is running`
+The application will start on port 8080.
 
-## Available Endpoints
+## API Documentation
 
-1. **Health Check**
-   - GET `http://localhost:8080/api/kafka/health`
-   - Returns the health status of the Kafka service
+### 1. Send Message to Kafka
 
-2. **Send Sample Message**
-   - POST `http://localhost:8080/api/kafka/send`
-   - Sends a predefined sample message to Kafka
+#### Basic Message Format
+```bash
+curl -X POST http://localhost:8080/api/messages/send \
+-H "Content-Type: application/json" \
+-d '{
+    "topic": "test-topic",
+    "message": "Hello, Kafka!",
+    "key": "test-key"
+}'
+```
 
-3. **Send Custom Message**
-   - POST `http://localhost:8080/api/kafka/send/custom`
-   - Sends a custom message to Kafka
-   - Request body should be a JSON object with the following structure:
-     ```json
-     {
-       "foracid": "string",
-       "acctname": "string",
-       "lastTranDateCr": "date",
-       "tranDate": "date",
-       "tranId": "string",
-       "partTranSrlNum": "string",
-       "delFlg": "string",
-       "tranType": "string",
-       "tranSubType": "string",
-       "partTranType": "string",
-       "glSubHeadCode": "string",
-       "acid": "string",
-       "valueDate": "date",
-       "tranAmt": "number",
-       "tranParticular": "string",
-       "entryDate": "date",
-       "pstdDate": "date",
-       "refNum": "string",
-       "instrmntType": "string",
-       "instrmntDate": "date",
-       "instrmntNum": "string",
-       "tranRmks": "string",
-       "custId": "string",
-       "brCode": "string",
-       "crncyCode": "string",
-       "tranCrncyCode": "string",
-       "refAmt": "number",
-       "solId": "string",
-       "bankCode": "string",
-       "treaRefNum": "string",
-       "reversalDate": "date"
-     }
-     ```
+#### Financial Transaction Message Format
+```bash
+curl --location 'http://localhost:8080/api/kafka/send' \
+--header 'Content-Type: application/json' \
+--data '{
+    "FORACID": "1234567890",
+    "ACCT_NAME": "Test Account",
+    "TRAN_AMT": 1000.0,
+    "TRAN_DATE": "2024-04-03"
+}'
+```
 
-4. **Get Messages**
-   - GET `http://localhost:8080/api/kafka/messages`
-   - Retrieves all messages received by the consumer
+### Message Format Details
 
-## Troubleshooting
+#### Financial Transaction Message Fields
+| Field Name | Type | Description |
+|------------|------|-------------|
+| FORACID | String | Account ID |
+| ACCT_NAME | String | Account Name |
+| TRAN_AMT | Double | Transaction Amount |
+| TRAN_DATE | String | Transaction Date (YYYY-MM-DD) |
 
-1. **Port 8080 already in use**
-   - Find the process using port 8080:
-     ```bash
-     netstat -ano | findstr :8080
-     ```
-   - Stop the process:
-     ```bash
-     taskkill /F /PID <process-id>
-     ```
+### 2. Get All Messages
+```bash
+# Get all messages from the database
+curl -X GET http://localhost:8080/api/messages
 
-2. **Kafka connection issues**
-   - Ensure Docker containers are running:
-     ```bash
-     docker ps
-     ```
-   - Check Kafka logs:
-     ```bash
-     docker-compose logs kafka
-     ```
+# Get all Kafka messages
+curl --location 'http://localhost:8080/api/kafka/messages'
+```
 
-3. **Application startup issues**
-   - Check application logs for errors
-   - Verify all required services (Kafka, Zookeeper, Schema Registry) are running
-   - Ensure all required environment variables are set
+### 3. Get Message by ID
+```bash
+curl -X GET http://localhost:8080/api/messages/{id}
+```
 
-## Development
+### 4. Get Messages by Topic
+```bash
+curl -X GET http://localhost:8080/api/messages/topic/{topicName}
+```
 
-- The application uses Spring Boot 2.7.0
-- Kafka configuration is in `src/main/java/com/example/kafka/config/KafkaConfig.java`
-- Avro schema is defined in `src/main/resources/avro/plutus-finacle-data.avsc`
-- Custom serializers are in `src/main/java/com/example/kafka/serializer/`
+## Code Structure
+
+### Main Components
+
+1. **KafkaConfig** (`com.example.kafka.config.KafkaConfig`)
+   - Configures Kafka producer and consumer properties
+   - Sets up reactive Kafka template
+   - Configures message listener container
+
+2. **MessageController** (`com.example.kafka.controller.MessageController`)
+   - REST endpoints for message operations
+   - Handles message sending and retrieval
+
+3. **ReactiveKafkaConsumer** (`com.example.kafka.consumer.ReactiveKafkaConsumer`)
+   - Reactive Kafka message consumer
+   - Processes messages and saves to database
+   - Implements error handling and retry logic
+
+4. **MessageService** (`com.example.kafka.service.MessageService`)
+   - Business logic for message operations
+   - Database interactions
+
+5. **MessageRepository** (`com.example.kafka.repository.MessageRepository`)
+   - JPA repository for message persistence
+   - Custom query methods
+
+6. **Message** (`com.example.kafka.model.Message`)
+   - Entity class representing message data
+   - JPA annotations for database mapping
+
+## Database Schema
+
+The application uses H2 in-memory database with the following schema:
+
+```sql
+CREATE TABLE message (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    topic VARCHAR(255),
+    message_key VARCHAR(255),
+    content TEXT,
+    created_at TIMESTAMP
+);
+```
+
+## Configuration
+
+### Application Properties
+```properties
+# Kafka Configuration
+spring.kafka.bootstrap-servers=localhost:9092
+spring.kafka.consumer.group-id=my-group
+spring.kafka.consumer.auto-offset-reset=earliest
+spring.kafka.consumer.key-deserializer=org.apache.kafka.common.serialization.StringDeserializer
+spring.kafka.consumer.value-deserializer=org.apache.kafka.common.serialization.StringDeserializer
+spring.kafka.producer.key-serializer=org.apache.kafka.common.serialization.StringSerializer
+spring.kafka.producer.value-serializer=org.apache.kafka.common.serialization.StringSerializer
+
+# H2 Database Configuration
+spring.datasource.url=jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+spring.datasource.driverClassName=org.h2.Driver
+spring.datasource.username=sa
+spring.datasource.password=
+spring.h2.console.enabled=true
+spring.h2.console.path=/h2-console
+spring.jpa.database-platform=org.hibernate.dialect.H2Dialect
+spring.jpa.hibernate.ddl-auto=update
+```
+
+### Kafka Consumer Configuration
+- Group ID: my-group
+- Auto offset reset: earliest
+- Concurrency: 3
+- Batch mode: true
+- Poll timeout: 1000ms
+- Max poll records: 500
+
+## Error Handling
+
+The application includes comprehensive error handling:
+- Kafka message processing errors
+- Database operation errors
+- REST API validation errors
+- Retry mechanism for failed operations
+
+## Monitoring
+
+The application provides:
+- H2 console for database monitoring (http://localhost:8080/h2-console)
+- Spring Boot Actuator endpoints for application metrics
+- Kafka consumer metrics
+- Database operation logs
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Commit your changes
+4. Push to the branch
+5. Create a Pull Request
 
 ## License
 
-[Add your license information here] 
+This project is licensed under the MIT License - see the LICENSE file for details. 
