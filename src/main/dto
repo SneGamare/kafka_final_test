@@ -1,0 +1,179 @@
+
+
+@Builder(toBuilder = true)
+public record Transaction(String transactionId,
+                          BigDecimal transactionAmt,
+                          String transactionCurrencyCode,
+                          Long transactionDateEpoch,
+                          Long valueDateEpoch,
+                          String partTranType,
+                          Long postedDateEpoch,
+                          String transactionParticular,
+                          String transactionParticular2,
+                          String transactionParticularCode,
+                          String transactionRemarks,
+                          String transactionSubType,
+                          String transactionType,
+                          String uadModuleId,
+                          String uadModuleKey,
+                          Long postedSerialNum,
+                          String rcreTime,
+                          String referenceNum,
+                          String debitOrCredit,
+                          String transactionSerialNum,
+                          String rptCode,
+                          String entryUserId,
+                          String moduleId,
+                          String source,
+                          Long ingestionTimeEpoch) {
+
+  private static final String MB1 = "MB1";
+
+  /**
+   * Converts a list of {@link TransactionDetailsObject} objects into a list of {@link Transaction}
+   * objects.
+   *
+   * @param transactionDetailsObject The list of objects to convert.
+   * @return A new list of {@link Transaction} objects.
+   * @throws NullPointerException if {@code transactionDetailsObject} is null.
+   */
+  public static List<Transaction> fromXmlFinacleTransaction(
+      List<TransactionDetailsObject> transactionDetailsObject) {
+    EpochProvider epochProvider = new EpochProvider();
+    List<Transaction> transactionList = new ArrayList<>();
+    transactionDetailsObject.forEach(transaction -> {
+      transactionList.add(
+          Transaction.builder()
+              .partTranType(transaction.transactionSummaryObject().txnType())
+              .postedDateEpoch(
+                  epochProvider.toEpoch(transaction.pstdDate(), "yyyy-MM-dd'T'HH:mm:ss.SSS"))
+              .transactionAmt(new BigDecimal(
+                  transaction.transactionSummaryObject().transactionAmountObject().amountValue()))
+              .transactionCurrencyCode(
+                  transaction.transactionSummaryObject().transactionAmountObject().currencyCode())
+              .transactionDateEpoch(
+                  epochProvider.toEpoch(transaction.transactionSummaryObject().txnDate(),
+                      "yyyy-MM-dd'T'HH:mm:ss.SSS"))
+              .transactionId(transaction.txnId())
+              .transactionParticular(transaction.transactionSummaryObject().txnDesc())
+              .transactionType(transaction.transactionSummaryObject().txnType())
+              .valueDateEpoch(
+                  epochProvider.toEpoch(transaction.valueDate(), "yyyy-MM-dd'T'HH:mm:ss.SSS"))
+              .build());
+    });
+    return transactionList;
+  }
+
+  /**
+   * Converts a list of {@link TransactionMsAccountAccountSummary} objects into a list of
+   * {@link Transaction} objects.
+   *
+   * @param accountTransactionSummary The list of objects to convert.
+   * @return A new list of {@link Transaction} objects.
+   * @throws NullPointerException if {@code transactionDetailsObject} is null.
+   */
+  public static List<Transaction> fromXmlFinacleMsTransaction(
+      List<TransactionMsAccountAccountSummary> accountTransactionSummary) {
+    EpochProvider epochProvider = new EpochProvider();
+    String[] possibleDateTimeFormats = {"yyyy-MM-dd'T'HH:mm:ss.SSS", "ddMMyyyy'T'HH:mm:ss.SSS"};
+    List<Transaction> transactionList = new ArrayList<>();
+    accountTransactionSummary.forEach(transaction -> {
+      transactionList.add(
+          Transaction.builder()
+              .partTranType(transaction.partTranType())
+              .postedDateEpoch(
+                  epochProvider.toEpoch(transaction.postedDate(), possibleDateTimeFormats))
+              .transactionAmt(new BigDecimal(transaction.tranAmount()))
+              .transactionCurrencyCode(
+                  transaction.tranCurrency())
+              .transactionDateEpoch(
+                  epochProvider.toEpoch(transaction.tranDate(), possibleDateTimeFormats))
+              .transactionId(transaction.tranId())
+              .transactionParticular(transaction.tranParticulars())
+              .transactionType(transaction.partTranType())
+              .valueDateEpoch(
+                  epochProvider.toEpoch(transaction.valueDate(), possibleDateTimeFormats))
+              .transactionSerialNum(transaction.partTranSrlNum())
+              .referenceNum(transaction.refNum())
+              .build());
+    });
+    return transactionList;
+  }
+
+  public static List<TransactionDetails> from(List<Transaction> transactionDetails,
+      String channel) {
+    List<TransactionDetails> transactionList = new ArrayList<>();
+    transactionDetails.forEach(transaction -> {
+      transactionList.add(
+          new TransactionDetails()
+              .transactionId(transaction.transactionId())
+              .transactionDateEpoch(transaction.transactionDateEpoch)
+              .transactionType(transaction.partTranType)
+              .transactionDesc(processCDataPrefixSuffix(channel, transaction.transactionParticular.trim())
+                  .trim())
+              .transactionAmount(new TransactionAmount()
+                  .currencyCode(transaction.transactionCurrencyCode)
+                  .amountValue(transaction.transactionAmt))
+              .valueDateEpoch(transaction.valueDateEpoch)
+              .postedDateEpoch(transaction.postedDateEpoch)
+              .transactionSerialNum(transaction.transactionSerialNum)
+              .transactionReferenceNum(processCDataPrefixSuffix(channel, transaction.referenceNum))
+      );
+    });
+    return transactionList;
+  }
+
+  /**
+   * Processes CDATA prefixes and suffixes based on the specified channel.
+   *
+   * @param channel The channel for which to process the data.
+   * @param value   The string value to process.
+   * @return The processed string with appropriate CDATA prefixes and suffixes added or removed.
+   *
+   * <p>If the channel is not {@code MB1}, removes any existing CDATA prefixes and suffixes from the
+   * string. Otherwise, adds CDATA prefixes and suffixes to the string.
+   * @see #removeCdataPrefixSuffix(String)
+   * @see #setCdataPrefixSuffix(String)
+   */
+  private static String processCDataPrefixSuffix(String channel, String value) {
+    if (!channel.equalsIgnoreCase(MB1)) {
+      return removeCdataPrefixSuffix(value);
+    } else {
+      return setCdataPrefixSuffix(value);
+    }
+  }
+
+  /**
+   * Sets CDATA prefix and suffix to a string, if not already present. This method checks if the
+   * provided `transDescription` string already starts with the defined `CDATA_PREFIX`. If not, it
+   * prepends the prefix and appends the defined `CDATA_SUFFIX` to the string.
+   *
+   * @param transDescription The string to which to add CDATA prefix and suffix. Can be null.
+   * @return The string with CDATA prefix and suffix added, or the original string if it already has
+   * them. If the input `transDescription` is null, this method returns null.
+   */
+  private static String setCdataPrefixSuffix(String transDescription) {
+    return transDescription == null || transDescription.startsWith(CDATA_PREFIX)
+        ? transDescription : CDATA_PREFIX + transDescription + CDATA_SUFFIX;
+  }
+
+  /**
+   * Removes CDATA prefix and suffix from a string. This method removes the CDATA prefix and suffix
+   * from the provided string `value`.
+   *
+   * @param value The string from which to remove the prefix and suffix.
+   * @return The string with CDATA prefix and suffix removed, or null if the input string is null.
+   */
+  private static String removeCdataPrefixSuffix(String value) {
+    if (value == null) {
+      return null;
+    }
+    if (value.startsWith(CDATA_PREFIX)) {
+      value = value.substring(CDATA_PREFIX.length());
+    }
+    if (value.endsWith(CDATA_SUFFIX)) {
+      value = value.substring(0, value.length() - CDATA_SUFFIX.length());
+    }
+    return value;
+  }
+}
