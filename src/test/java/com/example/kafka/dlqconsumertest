@@ -1,0 +1,209 @@
+@Slf4j
+public class DlqConsumerTest extends DynamoDbSetupBase {
+
+    private final EpochProvider epochProvider = new EpochProvider();
+    private static final ContainerConfig containerConfig = new ContainerConfig();
+    private static String bootstrapServers;
+    private String topic;
+    private String dlqTopic;
+    protected String groupId;
+
+    private CbsGamConsumerLite consumerLite;
+    private BalanceEventsIngestionService balSvc;
+    private BalanceEventsIngestionService dummyBalSvc;
+
+    private DynamoDbBalanceDaoImpl balDao;
+    private RedissonClient redissonClient;
+
+    protected static final RedisContainer redisContainer = containerConfig.redisContainer(new DummyPropertyRegistry());
+
+    @BeforeAll
+    public static void setUpBeforeClass() {
+        var container = containerConfig.kafkaContainer(new DummyPropertyRegistry(), false);
+        bootstrapServers = container.getBootstrapServers();
+    }
+
+    @BeforeEach
+    void setUp() {
+        balDao = new DynamoDbBalanceDaoImpl(ddb, epochProvider, ddbClient);
+        balSvc = new BalanceEventsIngestionService(balDao);
+        dummyBalSvc = new BalanceEventsIngestionService(new ErrorThrowingDynamoDbDao());
+
+        setupRedis();
+        topic = randStr("test-", 20);
+        dlqTopic = topic + "-dlq";
+        groupId = randStr("test-", 20);
+        KafkaAdminUtils.createTopic(bootstrapServers, topic);
+        consumerLite = new CbsGamConsumerLite(balSvc, dummyBalSvc);
+    }
+
+    public void setupRedis() {
+        var config = new Config().setUseScriptCache(true);
+        config.useSingleServer().setAddress(redisContainer.getRedisURI());
+        redissonClient = Redisson.create(config);
+    }
+
+    @AfterEach
+    public void cleanUpBase() {
+        log.info("Deleting topic: {}", topic);
+        KafkaAdminUtils.deleteTopics(bootstrapServers, this.topic);
+        log.info("Deleting topic: {}", dlqTopic);
+        KafkaAdminUtils.deleteTopics(bootstrapServers, this.dlqTopic);
+    }
+
+    @Test
+    public void testOrderedProcessingOfConsecutiveAccounts() {
+
+        try (var consumer = newConsumer()) {
+
+            var event = generateGamData();
+            event.setOpType("I");
+
+            var offsets = publishMessages(event);
+
+            await().atMost(Duration.ofSeconds(20)).until(() -> consumerLite.totalMessages() >= 1);
+
+            assertThat(consumerLite.messages.get(0)).isEqualTo(event);
+
+            var dbData = balDao.getAccountBalancesMasterData(
+                    byteBuffToStr(event.getAfter().getFORACID()));
+
+            assertEquals(byteBuffToStr(event.getAfter().getACID()), dbData.get().acid());
+            assertEquals(
+                    roundDouble(event.getAfter().getADHOCLIM()), dbData.get().adhocLimit());
+        }
+    }
+
+    private ReactiveKafkaConsumer<GeneralAcctMastTable> newConsumer() {
+        var failureHandler = new DlqHandler<GeneralAcctMastTable>();
+        var config = ConsumerConfiguration.<GeneralAcctMastTable>builder()
+                .bootstrapServers(bootstrapServers)
+                .topic(topic)
+                .groupId(groupId)
+                .valueDeserializer(CbsGamLiteDeserializer.class)
+                .processor(consumerLite)
+                .maxPollRecords(10)
+                .inMemoryPartitions(10)
+                .processorThreadPoolName("ROS-Testing")
+                .deferredCommitConfig(DeferredCommitConfiguration.builder()
+                        .commitIntervalMillis(3000L)
+                        .commitBatchSize(5)
+                        .maxDeferredCommits(5)
+                        .build())
+                .failureHandler(failureHandler)
+                .dlqConfig(DlqConfiguration.<GeneralAcctMastTable>builder()
+                        .dlqTopic(dlqTopic)
+                        .valueSerializer(CbsAvroSerializer.class)
+                        .build())
+                .build();
+        var consumer = new ReactiveKafkaConsumer<>(config, new MetricUtil(new SimpleMeterRegistry()));
+        consumer.start();
+        return consumer;
+    }
+
+    private Map<Integer, Long> publishMessages(GeneralAcctMastTable message) {
+        Properties props = new Properties();
+        props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
+        props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+        props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, AvroSerializerTest.class.getName());
+        props.put(ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION, "1");
+        props.put(ProducerConfig.ACKS_CONFIG, "1");
+        var offsets = new ConcurrentHashMap<Integer, Long>();
+
+        try (KafkaProducer<String, GeneralAcctMastTable> producer = new KafkaProducer<>(props)) {
+            producer.send(message(message), ((metadata, exception) -> {
+                if (exception == null) {
+                    log.info("Received new metadata. \n" + "Topic:" + metadata.topic() + "\n" + "Partition: "
+                            + metadata.partition() + "\n" + "Offset: " + metadata.offset() + "\n" + "Timestamp: "
+                            + metadata.timestamp());
+                    var currOffset = metadata.offset() + 1;
+                    offsets.compute(metadata.partition(), (k, p) -> Math.max(p == null ? 0 : p, currOffset));
+                }
+            }));
+            producer.flush();
+        }
+        await().atMost(Duration.ofSeconds(2));
+        return offsets;
+    }
+
+    public ProducerRecord<String, GeneralAcctMastTable> message(GeneralAcctMastTable p) {
+        return new ProducerRecord<>(topic, "key:value", p);
+    }
+
+    public static class CbsGamConsumerLite implements MessageConsumer<GeneralAcctMastTable> {
+
+        BalanceEventsIngestionService realSvc;
+        BalanceEventsIngestionService dummySvc;
+
+        public CbsGamConsumerLite(BalanceEventsIngestionService realSvc, BalanceEventsIngestionService dummySvc) {
+            this.realSvc = realSvc;
+            this.dummySvc = dummySvc;
+        }
+
+        private final List<GeneralAcctMastTable> messages = Collections.synchronizedList(new ArrayList<>());
+
+        @Override
+        public void process(ReceiverRecord<String, GeneralAcctMastTable> message) {
+
+            if (!message.topic().endsWith("-dlq")) {
+                dummySvc.handleBalanceEventIngestion(message);
+            } else {
+                realSvc.handleBalanceEventIngestion(message);
+                messages.add(message.value());
+            }
+        }
+
+        @Override
+        public String partitionKey(GeneralAcctMastTable message) {
+            try {
+                return byteBuffToStr(message.getAfter().getACID());
+            } catch (Exception e) {
+                return "";
+            }
+        }
+
+        public int totalMessages() {
+            return messages.size();
+        }
+    }
+
+    public static class CbsGamLiteDeserializer extends AvroDeserializer<GeneralAcctMastTable> {
+
+        public CbsGamLiteDeserializer() {
+            super(GeneralAcctMastTable.class);
+        }
+    }
+
+    public static class ErrorThrowingDynamoDbDao implements DynamoDbBalanceDao {
+
+        @Override
+        public Optional<AccountBalanceMasterData> getAccountBalancesMasterData(String accountId)
+                throws DatabaseException, DatabaseTransientException {
+            return Optional.empty();
+        }
+
+        @Override
+        public boolean upsertBalanceEvents(GeneralAcctMastTable generalAcctMastTable) throws DatabaseException {
+            throw new DatabaseException(new Exception("DynamoDB Down"));
+        }
+
+        @Override
+        public List<DynamoDbTable<?>> getTables() {
+            return null;
+        }
+
+        @Override
+        public boolean upsertBalanceData(DbAccountMasterData data) {
+            return true;
+        }
+
+        /**
+         * @param accountIds
+         * @return
+         */
+        @Override
+        public List<DbAccountMasterData> batchGetBalanceData(List<DbAccountMasterData> accountIds) {
+            return null;
+        }
+    }
+}
